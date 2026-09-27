@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>伊莫·家园生产计算</title>
-<link rel="stylesheet" href="./style.css?v=43">
+<link rel="stylesheet" href="./style.css?v=115">
 </head>
 <body>
 
@@ -17,11 +17,13 @@
 <nav class="tabs" id="main-tabs" aria-label="功能页签">
   <button type="button" class="tab on" data-tab="calc">生产计算</button>
   <button type="button" class="tab" data-tab="yimo">能力图鉴</button>
+  <button type="button" class="tab" data-tab="plan">家园规划</button>
+    <button type="button" class="tab" data-tab="blocks">积木图纸</button>
 </nav>
 
 <main>
 
-  <div id="tab-calc">
+  <div id="tab-calc" class="tab-page">
 
   <!-- 条件设置(页内) -->
   <div class="controls light" id="calc-controls">
@@ -194,7 +196,7 @@
   </div><!-- /tab-calc -->
 
   <!-- ======================= 能力图鉴 tab ======================= -->
-  <div id="tab-yimo" class="hidden">
+  <div id="tab-yimo" class="tab-page hidden">
 
     <section class="panel">
       <h3>建筑岗位推荐</h3>
@@ -221,6 +223,104 @@
 
   </div><!-- /tab-yimo -->
 
+  <!-- ======================= 家园规划 tab ======================= -->
+  <div id="tab-plan" class="tab-page hidden">
+    <section class="panel">
+      <h3>家园规划</h3>
+      <div class="hint mb6">左键放置/拖动 · 右键拆除 · R 键旋转 · Esc 取消选择 · 滚轮缩放 · 空白处拖动平移 · 原地点击热能炉/制冷机切换模式（🔥温暖 🔥🔥炎热 ❄凉爽 ❄❄冰冻）、点其他建筑可指定产物 · 「导入生产方案」按摆放顺序自动分配作物（手动指定的不被覆盖） · 光照与温度影响作物生长效率 · 建筑可跨土地格但必须在已解锁土地上 · 布局自动保存在本机</div>
+      <div class="filters">
+        <label>家园等级
+          <select id="plan-level" aria-label="家园等级"></select>
+        </label>
+        <label class="chk"><input id="plan-zones" type="checkbox" checked> 显示影响范围</label>
+        <span class="zoomctl">
+          <button id="plan-zoom-out" class="ghost" type="button" title="缩小">−</button>
+          <b id="plan-zoom-val">100%</b>
+          <button id="plan-zoom-in" class="ghost" type="button" title="放大">＋</button>
+          <button id="plan-zoom-reset" class="ghost" type="button">重置视图</button>
+        </span>
+        <button id="plan-del" class="ghost" type="button">拆除模式</button>
+        <button id="plan-clear" class="ghost" type="button">清空布局</button>
+        <button id="plan-import" class="ghost" type="button">导入生产方案</button>
+        <button id="plan-auto" class="ghost" type="button">一键布局</button>
+        <label class="chk"><input id="plan-crop-color" type="checkbox"> 作物色模式</label>
+        <button id="plan-export" class="ghost" type="button">导出图片</button>
+      </div>
+      <div id="plan-stats" class="hint mb6"></div>
+      <div id="plan-crop-picker" class="plan-picker hidden">
+        <div class="hint" id="plan-picker-title"></div>
+        <div id="plan-picker-list" class="plan-picker-list"></div>
+        <div class="filters">
+          <button id="plan-picker-clear" class="ghost" type="button">清除作物</button>
+          <button id="plan-picker-close" class="ghost" type="button">关闭</button>
+        </div>
+      </div>
+      <div class="plan-wrap">
+        <div id="plan-palette" class="plan-palette"></div>
+      <div class="plan-canvas-wrap">
+        <canvas id="plan-canvas" width="640" height="640"></canvas>
+        <div id="plan-info" class="hint"></div>
+      </div>
+      </div>
+    </section>
+  </div><!-- /tab-plan -->
+
+
+  <div id="tab-blocks" class="tab-page hidden">
+    <section class="panel">
+      <h3>积木图纸</h3>
+      <div class="hint mb6">上传图片或导入 JSON 生成图纸（每格 = 1 个积木 = 2×2×2，默认 40×40，最大 80×80），生成后可直接用画笔修改；左键点色板选画笔，右键点色板禁用该色</div>
+      <div class="filters">
+        <label class="chk">上传图片 <input id="blk-file" type="file" accept="image/*"></label>
+        <label class="chk">导入JSON <input id="blk-json" type="file" accept=".json,application/json"></label>
+        <span id="blk-fname" class="hint"></span>
+        <label>宽 <input id="blk-w" type="number" min="1" max="80" value="40" style="width:5em"></label>
+        <label>高 <input id="blk-h" type="number" min="1" max="80" value="40" style="width:5em"></label>
+        <label class="chk" title="拼豆/网格类图纸截图：自动识别网格区域，按宽×高逐格取主色（忽略格内字母编号），白底无字格留空">
+          <input id="blk-grid" type="checkbox"> 拼豆/网格图纸</label>
+        <span id="blk-grid-row" class="hidden">
+          <label>裁上 <input id="blk-mt" type="number" value="0" style="width:3.5em"></label>
+          <label>下 <input id="blk-mb" type="number" value="0" style="width:3.5em"></label>
+          <label>左 <input id="blk-ml" type="number" value="0" style="width:3.5em"></label>
+          <label>右 <input id="blk-mr" type="number" value="0" style="width:3.5em"></label>
+          <span class="hint">px，识别不准时向内收</span>
+        </span>
+        <label class="chk"><input type="radio" name="blk-bg" value="empty" checked> 透明留空</label>
+        <label class="chk"><input type="radio" name="blk-bg" value="white"> 铺白底</label>
+        <label class="chk"><input type="radio" name="blk-bg" value="custom"> 自定义</label>
+        <input id="blk-bg-hex" type="color" value="#ffffff" disabled>
+        <label class="chk"><input id="blk-cleanup" type="checkbox" checked> 小区域清理</label>
+        <label>最小区域 <input id="blk-min-region" type="number" min="1" max="10" value="1" style="width:4em"></label>
+        <button id="blk-gen" class="ghost" type="button">重新生成</button>
+      </div>
+      <div class="filters">
+        <span id="blk-brush" class="blk-brush"></span>
+        <button id="blk-eraser" class="ghost" type="button">橡皮擦</button>
+        <button id="blk-clear" class="ghost" type="button">清空图纸</button>
+        <span class="hint">图纸上左键拖动绘制 · 右键拖动擦除</span>
+        <span class="zoomctl">
+          <button id="blk-zoom-out" class="ghost" type="button" title="缩小">−</button>
+          <b id="blk-zoom-val">100%</b>
+          <button id="blk-zoom-in" class="ghost" type="button" title="放大">＋</button>
+          <button id="blk-zoom-reset" class="ghost" type="button">适应宽度</button>
+        </span>
+        <span class="hint">Ctrl+滚轮缩放，缩小可看全貌，放大后色块内显示颜色名</span>
+      </div>
+      <div id="blk-summary" class="hint mb6"></div>
+      <div id="blk-legend" class="blk-legend"></div>
+      <div id="blk-palette" class="blk-palette"></div>
+      <div id="blk-canvas-wrap" class="blk-canvas-wrap">
+        <canvas id="blk-canvas"></canvas>
+        <div id="blk-sizer"></div>
+      </div>
+      <div class="filters mt">
+        <button id="blk-exp-png" class="ghost" type="button">导出 PNG</button>
+        <button id="blk-exp-svg" class="ghost" type="button">导出 SVG</button>
+        <button id="blk-exp-csv" class="ghost" type="button">导出 CSV</button>
+        <button id="blk-exp-json" class="ghost" type="button">导出 JSON(含游戏放置清单)</button>
+      </div>
+    </section>
+  </div>
 </main>
 
 
@@ -231,6 +331,6 @@
 </div>
 
 <script src="./echarts.min.js"></script>
-<script type="module" src="./app.js?v=43"></script>
+<script type="module" src="./app.js?v=115"></script>
 </body>
 </html>

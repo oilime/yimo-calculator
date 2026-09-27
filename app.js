@@ -1,6 +1,8 @@
 /* 伊莫家园生产计算器 前端逻辑(纯前端: 本地引擎 + localStorage) */
 import { getEngine, getGameData } from "./engine/client.js";
 import { store } from "./engine/store.js";
+import { initPlanner, syncPlanner } from "./planner.js?v=115";
+import { initBlocks } from "./blocks.js?v=115";
 
 "use strict";
 
@@ -125,6 +127,7 @@ async function runOptimize() {
     });
     if (!result.ok) throw new Error(result.message);
     state.lastResult = result;
+    window.__yimoResult = result;          // 供家园规划页导入作物安排
     state.level = levelValue(); state.hours = result.hours;
     renderOverview(result);
     renderArrangement(result);
@@ -673,8 +676,14 @@ function renderStockUsed(r) {
 function pinRow(building = "", recipeId = "", n = "") {
   const div = document.createElement("div");
   div.className = "pin-row";
+  /* 只显示当前等级能够产出的产物(等级不限时显示全部); 已保存的超等级项保留显示 */
+  const lv = levelValue();
+  const lvOk = (r) => lv == null || r.req_level == null || r.req_level <= lv;
+  const avail = state.recipes.filter((r) => lvOk(r) || r.id == recipeId);
+  const bNames = new Set(avail.map((r) => r.building));
+  if (building) bNames.add(building);          // 已保存的建筑不在等级范围内也保留
   const bOpts = `<option value=""${building ? "" : " selected"} disabled>选择建筑…</option>` +
-    state.buildings.map((b) =>
+    state.buildings.filter((b) => bNames.has(b.name)).map((b) =>
       `<option${b.name === building ? " selected" : ""}>${b.name}</option>`).join("");
   div.innerHTML =
     `<select class="p-building" aria-label="自定义建筑">${bOpts}</select>` +
@@ -689,7 +698,7 @@ function pinRow(building = "", recipeId = "", n = "") {
   const updateFilled = () =>
     div.classList.toggle("filled", !!(bSel.value && rSel.value));
   const fillRecipes = () => {
-    const rs = state.recipes.filter((r) => r.building === bSel.value);
+    const rs = avail.filter((r) => r.building === bSel.value);
     rSel.innerHTML = `<option value=""${curRid ? "" : " selected"} disabled>选择产物…</option>` +
       rs.map((r) => `<option value="${r.id}"${r.id == curRid ? " selected" : ""}>` +
         `${recipeLabel(r)}</option>`).join("");
@@ -1111,16 +1120,21 @@ let yimoReady = false;
 const TAB_TITLES = {
   calc: "伊莫·家园生产计算",
   yimo: "伊莫·家园图鉴",
+  plan: "伊莫·家园规划",
+  blocks: "伊莫·积木图纸",
 };
 function switchTab(name) {
   $$("#main-tabs .tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-  $("#tab-calc").classList.toggle("hidden", name !== "calc");
-  $("#tab-yimo").classList.toggle("hidden", name !== "yimo");
+  $$(".tab-page").forEach((el) => el.classList.toggle("hidden", el.id !== "tab-" + name));
   const title = TAB_TITLES[name] || TAB_TITLES.calc;
   $("#brand").textContent = title;
   document.title = title;
   if (name === "calc")               // 隐藏期间尺寸变化的图表重排
     $$(".chart").forEach((el) => el.__chart && el.__chart.resize());
+  if (name === "plan")               // 计算页设定登记后同步到规划页
+    syncPlanner();
+  if (name === "blocks")
+    initBlocks();
 }
 $("#main-tabs").addEventListener("click", (e) => {
   const b = e.target.closest(".tab");
@@ -1183,11 +1197,15 @@ function stationCount(t) {
     FAMILY_SERIALS[t.v].includes(f.serial)).length;
 }
 
-/* 无需岗位推荐的建筑(田地/林地种什么都行), 不进岗位区 */
-const STATION_HIDDEN = new Set(["田地", "林地"]);
+/* 无需岗位推荐的建筑: 田地/林地种什么都行;
+   设备类(光照/温度/仓储/舞力能量机/迷立方制造机)无岗位概念, 不进岗位区 */
+const STATION_HIDDEN = new Set([
+  "田地", "林地", "日光灯", "热能炉", "制冷机",
+  "仓储单元", "舞力能量机", "迷立方制造机", "孵化器",
+]);
 
 /* 不在库内但有岗位条件的建筑 */
-const EXTRA_STATIONS = ["日光灯", "热能炉", "制冷机"];
+const EXTRA_STATIONS = [];          /* 设备建筑已入库, 无额外岗位建筑 */
 
 /* 岗位选中态: 点击岗位卡后高亮, 手动改动筛选条件即取消 */
 let stationSel = "";
@@ -1387,4 +1405,5 @@ async function initAnalytics() {
     showError("初始化失败: " + e.message);
   }
   initAnalytics();
+  initPlanner();
 })();
