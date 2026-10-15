@@ -378,8 +378,8 @@ export function createEngine(gameData, solve) {
   function optimize(opts) {
     const {
       level = null, hours = 24, coeff = 1.0, counts = null,
-      excludeSeasonal = false, lazy = false, maxSwitches = 0, stock = null,
-      maxRecipes = null, buildingEff = null, pins = null,
+      excludeSeasonal = false, lazy = false, stock = null,
+      buildingEff = null, pins = null, upgradeFirst = false,
     } = opts;
     const T = Number(hours) * 3600;
     const recipes = recipesAll.map((r) => ({ ...r }));
@@ -392,6 +392,24 @@ export function createEngine(gameData, solve) {
       }
     }
     let [pool, excluded] = filterAvailable(recipes, level, excludeSeasonal, keepIds);
+    /* 升级优先: 林地/矿山只保留解锁等级最高一档的产物(如15级林地=高速枫糖汁/椰子/天然橡胶) */
+    if (upgradeFirst) {
+      const keepUF = new Set();
+      const topTier = {};
+      for (const r of pool) {
+        if (r.building !== "林地" && r.building !== "矿山") continue;
+        topTier[r.building] = Math.max(topTier[r.building] ?? -1, r.req_level ?? -1);
+      }
+      for (const r of pool) {
+        if (r.building !== "林地" && r.building !== "矿山") { keepUF.add(r.id); continue; }
+        if ((r.req_level ?? -1) === topTier[r.building]) keepUF.add(r.id);
+      }
+      const droppedUF = pool.filter((r) => !keepUF.has(r.id));
+      for (const r of droppedUF) excluded.push({
+        building: r.building, name: r.label,
+        reason: "升级优先：仅保留最高解锁档产物" });
+      pool = pool.filter((r) => keepUF.has(r.id));
+    }
     const chains = materialChains(recipes, level, excludeSeasonal, coeff,
                                   buildingEff, counts, T);
     if (chains.length) {
@@ -491,7 +509,7 @@ export function createEngine(gameData, solve) {
 
     if (lazy) {
       const res = optimizeLazy(pool, T, coeff, level, hours, counts, pm, warns,
-        maxSwitches, stockN, maxRecipes, banned,
+        stockN, banned,
         new Set(pinApplied.filter((p) => !p.n).map((p) => p.recipe_id)),
         pinApplied, partial, seasonalCap, excluded, solve);
       res.building_eff = buildingEff || {};
@@ -674,7 +692,7 @@ export function createEngine(gameData, solve) {
 
   /* ---------------- 懒人模式 ---------------- */
   function optimizeLazy(pool, T, coeff, level, hours, counts, pm, warn,
-                        maxSwitches, stock, maxRecipes, banned, pinIds,
+                        stock, banned, pinIds,
                         pinApplied, partial, seasonalCap, excluded, solve) {
     const partialK = {};
     pool.forEach((r, k) => { if (partial[r.id] != null) partialK[k] = partial[r.id]; });
@@ -705,15 +723,18 @@ export function createEngine(gameData, solve) {
         for (let s = 0; s < S; s++) if (KK[k][s] > 0) vi[`${k},${s}`] = nv++;
       }
       const nVR = nv;
-      const xi = {};
+      /* 制造建筑两层变量: zi=整数席位数(限配方种类, 有几座最多几种),
+         xi=连续轮次(材料到了就跑, r <= 满轮*席位) —— 每座全程只碰一个配方,
+         但不必跑满全天 */
+      const zi = {};
       for (const k of mfgK) {
         if (banned.has(pool[k].id)) continue;
-        xi[k] = nv++;
+        if (KK[k][0] > 0) zi[k] = nv++;
       }
-      const usedK = [...new Set(Object.keys(vi).map((s) => +s.split(",")[0]))].sort((a, b) => a - b);
-      const ui = {};
-      usedK.forEach((k, i) => { ui[k] = nv + i; });
-      const nAll = nv + usedK.length;
+      const nVI = nv;
+      const xi = {};
+      for (const k in zi) xi[k] = nv++;
+      const nAll = nv;
       const obj = new Array(nAll).fill(0);
       for (const key in vi) {
         const [k, s] = key.split(",").map(Number);
@@ -722,7 +743,7 @@ export function createEngine(gameData, solve) {
       }
       for (const k in xi) {
         const bonus = pinIds.has(pool[k].id) ? PIN_BONUS * pool[k].time : 0;
-        obj[xi[k]] = pool[k].coeff + bonus;
+        obj[xi[k]] = pool[k].coeff + bonus;   // 按轮计价
       }
       const rows = [], ub = [];
       for (const bd of buildings) {
@@ -740,11 +761,12 @@ export function createEngine(gameData, solve) {
         if (mfgK.some((k) => pool[k].building === bd)) {
           const row = [];
           for (const k of mfgK)
-            if (pool[k].building === bd && xi[k] != null) row.push([xi[k], pool[k].time]);
+            if (pool[k].building === bd && zi[k] != null) row.push([zi[k], 1]);
           rows.push(row);
-          ub.push(T * bcount(bd));
+          ub.push(bcount(bd));
         }
       }
+      for (const k in xi) rows.push([[xi[k], 1], [zi[k], -KK[k][0]]]);   // r <= KK*z
       for (const it of items) {
         for (let j = 0; j < S; j++) {
           const row = [];
@@ -761,7 +783,7 @@ export function createEngine(gameData, solve) {
       }
       const lo = new Array(nAll).fill(0);
       for (const k in partialK) {
-        if (xi[k] != null) lo[xi[k]] = partialK[k] * T / pool[k].time;
+        if (zi[k] != null) lo[zi[k]] = Math.min(partialK[k], bcount(pool[k].building));
         else for (let s = 0; s < S; s++)
           if (vi[`${k},${s}`] != null)
             lo[vi[`${k},${s}`]] = Math.min(partialK[k], bcount(pool[k].building));
@@ -773,35 +795,18 @@ export function createEngine(gameData, solve) {
           ? Math.min(capK[k], bcount(pool[k].building))
           : bcount(pool[k].building);
       }
-      for (const k in xi) {
-        hiArr[xi[k]] = capK[k] != null
-          ? capK[k] * T / pool[k].time
-          : T * bcount(pool[k].building) / pool[k].time;
-      }
-      usedK.forEach(() => hiArr.push(1));
-      if (maxRecipes) {
-        for (const key in vi) {
-          const k = +key.split(",")[0];
-          rows.push([[vi[key], 1], [ui[k], -bcount(pool[k].building)]]);
-          ub.push(0);
-        }
-        for (const bd of buildings) {
-          const row = [];
-          for (const k of usedK) {
-            if (pool[k].building === bd && !pinIds.has(pool[k].id) &&
-                !(k in partialK) && !(k in capK))
-              row.push([ui[k], 1]);
-          }
-          if (row.length) { rows.push(row); ub.push(maxRecipes); }
-        }
-      }
+      const mfgHi = (k) => capK[k] != null
+        ? Math.min(capK[k], bcount(pool[k].building))
+        : bcount(pool[k].building);
+      for (const k in zi) hiArr[zi[k]] = mfgHi(k);
+      for (const k in xi) hiArr[xi[k]] = KK[k][0] * mfgHi(k);
       const ints = [
         ...new Array(nVR).fill(true),
-        ...new Array(Object.keys(xi).length).fill(false),
-        ...new Array(usedK.length).fill(true),
+        ...new Array(nVI - nVR).fill(true),      // 席位整数
+        ...new Array(nAll - nVI).fill(false),    // 轮次连续
       ];
       return { n: nAll, obj, rows, ub, lo, hi: hiArr, ints,
-               vi, xi, KK, segs, rawOrder: Object.keys(vi).length ? nVR : 0 };
+               vi, xi, zi, KK, segs, rawOrder: Object.keys(vi).length ? nVR : 0 };
     }
 
     function solveMilp(m, gap, tl) {
@@ -813,10 +818,15 @@ export function createEngine(gameData, solve) {
         const y = Math.round(sol[m.vi[key]]);
         if (y > 0) yv[key] = y;
       }
-      const xv = {};
+      const xv = {};                          // 制造建筑: 轮次(连续)
       for (const k in m.xi) {
         const x = Math.max(0, sol[m.xi[k]]);
         if (x > 1e-6) xv[k] = x;
+      }
+      const zv = {};                          // 制造建筑: 席位(整数)
+      for (const k in m.zi) {
+        const z = Math.round(Math.max(0, sol[m.zi[k]]));
+        if (z > 0) zv[k] = z;
       }
       const total =
         Object.entries(yv).reduce((s, [key, y]) => {
@@ -824,14 +834,7 @@ export function createEngine(gameData, solve) {
           return s + m.KK[k][sg] * pool[k].coeff * y;
         }, 0) +
         Object.entries(xv).reduce((s, [k, x]) => s + pool[k].coeff * x, 0);
-      return [total, [yv, xv]];
-    }
-
-    function solveLpVal(m) {
-      const sol = solve({ n: m.n, obj: m.obj, rows: m.rows, ub: m.ub,
-        lo: m.lo, hi: m.hi, ints: null, maximize: true });
-      return sol
-        ? m.obj.reduce((s, c, i) => s + c * sol[i], 0) : -Infinity;
+      return [total, [yv, xv, zv]];
     }
 
     function segsFrom(...switchH) {
@@ -850,114 +853,13 @@ export function createEngine(gameData, solve) {
       if (t0 != null) finals.push([t0, y0, m0]);
     }
 
-    if (maxSwitches >= 1 && maxRecipes !== 1) {
-      const step = Math.max(1, Math.round(hours / 24));
-      const cand = [];
-      for (let h = step; h < hours - step / 2; h += step)
-        cand.push(Math.round(h * 1000) / 1000);
-      if (cand.length) {
-        const milpRank = pool.length * 3 <= 900;
-        const cache1 = new Map(), cache2 = new Map();
-        const probe = (...cuts) => {
-          const m = buildModel(segsFrom(...cuts));
-          if (milpRank) {
-            const [t, y] = solveMilp(m, 0.002, 15);
-            return [t == null ? -Infinity : t, m, y];
-          }
-          return [solveLpVal(m), m, null];
-        };
-        const precise = (m) => {
-          const [t, y] = solveMilp(m, 0.0005, 60);
-          return t == null ? null : [t, y];
-        };
-        const rank1 = (t) => {
-          if (!cache1.has(t)) cache1.set(t, probe(t)[0]);
-          return cache1.get(t);
-        };
-        const rank2 = (t1, t2) => {
-          const key = t1 + "|" + t2;
-          if (!cache2.has(key)) cache2.set(key, probe(t1, t2)[0]);
-          return cache2.get(key);
-        };
-        const pts1 = cand.map((t) => [rank1(t), t]).sort((a, b) => b[0] - a[0]);
-        const small = pool.length <= 150;
-        if (maxSwitches === 1) {
-          const list = small ? cand : pts1.slice(0, 3).map((p) => p[1]);
-          for (const t of list) {
-            const m = buildModel(segsFrom(t));
-            const p = precise(m);
-            if (p) finals.push([p[0], p[1], m]);
-          }
-        } else if (small && cand.length <= 14) {
-          let best = null;
-          for (let i = 0; i < cand.length; i++)
-            for (let j = i + 1; j < cand.length; j++) {
-              const m = buildModel(segsFrom(cand[i], cand[j]));
-              const p = precise(m);
-              if (p) { finals.push([p[0], p[1], m]);
-                if (!best || p[0] > best[0]) best = [p[0], [cand[i], cand[j]]]; }
-            }
-          void best;
-        } else {
-          const t1v = pts1[0][1];
-          const scans2 = cand.filter((t2) => t2 > t1v + step / 2)
-            .map((t2) => [rank2(t1v, t2), t2]).sort((a, b) => b[0] - a[0]);
-          let bestAb = null;
-          if (scans2.length) {
-            const t2v = scans2[0][1];
-            const scans3 = cand.filter((a) => a < t2v - step / 2)
-              .map((a) => [rank2(a, t2v), a]).sort((x, y) => y[0] - x[0]);
-            const t1b = scans3.length ? scans3[0][1] : t1v;
-            const pairs = [
-              [t1b, scans2[0][1]],
-              scans2.length > 1 ? [t1b, scans2[1][1]] : null,
-              [t1v, scans2[0][1]],
-              [t1v, t2v],
-              scans3.length > 1 ? [scans3[1][1], t2v] : null,
-            ].filter((p) => p && p[0] > 0 && p[0] < p[1] && p[1] < hours);
-            const uniq = [...new Map(pairs.map((p) => [p.join(","), p])).values()];
-            for (const ab of uniq) {
-              const m = buildModel(segsFrom(ab[0], ab[1]));
-              const p = precise(m);
-              if (p) {
-                finals.push([p[0], p[1], m]);
-                if (!bestAb || p[0] > bestAb[0]) bestAb = [p[0], ab];
-              }
-            }
-            if (bestAb) {
-              const [a0, b0] = bestAb[1];
-              const seen = new Set([bestAb[1].join(",")]);
-              for (const d1 of [-2, -1, 1, 2])
-                for (const d2 of [-2, -1, 0, 1, 2]) {
-                  const a = Math.round((a0 + d1 * step) * 1000) / 1000;
-                  const b = Math.round((b0 + d2 * step) * 1000) / 1000;
-                  const key = [a, b].join(",");
-                  if (seen.has(key) || a < step || b <= a + step / 2 ||
-                      b > hours - step / 2) continue;
-                  seen.add(key);
-                  const m = buildModel(segsFrom(a, b));
-                  const p = precise(m);
-                  if (p) finals.push([p[0], p[1], m]);
-                }
-            }
-          } else {
-            for (const [, t] of pts1.slice(0, 3)) {
-              const m = buildModel(segsFrom(t));
-              const p = precise(m);
-              if (p) finals.push([p[0], p[1], m]);
-            }
-          }
-        }
-      }
-    }
-
     if (!finals.length) {
       return { ok: false, message: "懒人模式求解失败" +
         (Object.keys(partialK).length ? "（部分自定义生产可能材料不足，尝试减小自定义数量或提供存量）" : ""),
         excluded: [] };
     }
     finals.sort((a, b) => b[0] - a[0]);
-    const [total, [yv, xvRaw], m] = finals[0];
+    const [total, [yv, xvRaw, zvRaw], m] = finals[0];
     const segs = m.segs, KK = m.KK;
     const S = segs.length;
     const xv = xvRaw;
@@ -970,9 +872,10 @@ export function createEngine(gameData, solve) {
       a.batches += KK[k][s] * y;
       a.peak = Math.max(a.peak, y);
     }
-    for (const k in xv) {
+    for (const k in xv) {                     // 轮次直接累计, 峰值=席位数
       const a = agg[k] || (agg[k] = { batches: 0, peak: 0 });
       a.batches += xv[k];
+      a.peak = Math.max(a.peak, zvRaw ? (zvRaw[k] || 0) : Math.ceil(xv[k] / KK[k][0]));
     }
 
     const plan = [], util = [], flows = {};
@@ -1054,7 +957,7 @@ export function createEngine(gameData, solve) {
           batches_int: Math.round(agg[k].batches),
           time_per_batch: Math.round(r.time * 10) / 10,
           ttype: r.ttype, unit: r.ttype === "生长" ? "地块" : "席位",
-          slots: flex ? null : agg[k].peak,
+          slots: agg[k].peak,
           flexible: flex,
           net_per_batch: Math.round(r.coeff * 10) / 10,
         });
@@ -1088,7 +991,6 @@ export function createEngine(gameData, solve) {
       total_lp: total, total_int: total, ratio: 1.0,
       plan, utilization: util, sells,
       flows, stock_used: stockUsed, stock: stock || {},
-      max_recipes: maxRecipes,
       excluded, warnings: warn, segments,
       lazy: true, duals_available: false };
   }

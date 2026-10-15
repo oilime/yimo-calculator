@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>伊莫·家园生产计算</title>
-<link rel="stylesheet" href="./style.css?v=115">
+<link rel="stylesheet" href="./style.css?v=145">
 </head>
 <body>
 
@@ -46,25 +46,11 @@
     <label class="chk" title="勾选后月露萝卜、盈月椒等赛季作物参与规划；自定义生产里设定的不受此影响">
       <input id="opt-use-seasonal" type="checkbox"> 赛季配方
     </label>
-    <label class="chk" title="原料建筑全程不换配方，制造建筑不受限">
+    <label class="chk" title="勾选后林地/矿山只生产解锁等级最高一档的产物（如15级林地仅高速枫糖汁/椰子/天然橡胶、矿山仅石英），低级产物不再参与规划">
+      <input id="opt-upgrade" type="checkbox"> 升级优先
+    </label>
+    <label class="chk" title="每座建筑全程只用一个配方：田地/林地按地块、制造建筑按席位分配，有几座该建筑最多同时用几种配方">
       <input id="opt-lazy" type="checkbox"> 懒人模式
-    </label>
-    <label id="sw-wrap" class="chk hidden" title="原料建筑最多用几种配方，自定义生产不占额度">
-      原料配方
-      <select id="max-recipes">
-        <option value="" selected>不限</option>
-        <option value="1">每种1种·整齐划一</option>
-        <option value="2">每种≤2种</option>
-        <option value="3">每种≤3种</option>
-      </select>
-    </label>
-    <label id="sw2-wrap" class="chk hidden" title="全程统一换几次配方，所有原料建筑同时换">
-      换配方
-      <select id="max-switch">
-        <option value="0" selected>不换</option>
-        <option value="1">最多1次</option>
-        <option value="2">最多2次</option>
-      </select>
     </label>
     <button id="btn-run" class="primary">计算最优方案</button>
   </div>
@@ -331,6 +317,6 @@
 </div>
 
 <script src="./echarts.min.js"></script>
-<script type="module" src="./app.js?v=115"></script>
+<script type="module" src="./app.js?v=145"></script>
 </body>
 </html>

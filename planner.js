@@ -187,6 +187,14 @@ function powerState() {
   return { gens, poles, conn, connPoles, discPoles, candidates, fed, usedW, genW, eff, consumers };
 }
 function z_genW(eff, it) {
+  /* 发电量按家园等级分档(config gen_watt_by_level, 取<=等级的最大档); 兼容旧数据无表时回落 modes */
+  const byLv = GD.gen_watt_by_level;
+  if (byLv && Object.keys(byLv).length) {
+    let w = 0;
+    for (const k of Object.keys(byLv).map(Number).sort((a, b) => a - b))
+      if (plan.level >= k) w = byLv[k];
+    return (it.mode != null && it.mode) ? w : 0;
+  }
   return (it.mode != null && eff.modes) ? (eff.modes[it.mode] || 0) : 0;
 }
 /* 需要原材料的建筑(配方含输入) —— 只有这类建筑接入电网(用户设定),
@@ -796,6 +804,23 @@ function autoLayout() {
   }
   if (plan.items.length && !confirm("一键布局会覆盖现有布局（含作物指定），继续？"))
     return;
+  /* 杆槽行距(加工区行间 gutter)先宽后窄: 宽行距给电线杆留槽, 掉落多则回退紧凑排布 */
+  let snap8 = null, d8 = 0;
+  d8 = layoutOnce(8);
+  if (d8 > 0) {
+    snap8 = { items: plan.items.map((it) => ({ ...it })), nextId, info: hoverInfo };
+    const d2 = layoutOnce(2);
+    if (d2 >= d8) {                            // 回退无益: 恢复宽行距版
+      plan.items = snap8.items;
+      nextId = snap8.nextId;
+      hoverInfo = snap8.info;
+      save(); renderPalette(); renderStats(); draw();
+    }
+  }
+}
+
+function layoutOnce(mfgGutter) {
+  const r = window.__yimoResult;
   /* 完整数据等级(10/11/12)自动按官方数量布局; 其他等级登记数量覆盖等级默认 */
   const counts = fullLevelCounts()
     ? Object.assign({}, fullLevelCounts())
@@ -992,12 +1017,48 @@ function autoLayout() {
   const packAnchor = (d) => {
     const q = [...queues[d.key]].sort((a, b) => (b.exact ? 1 : 0) - (a.exact ? 1 : 0));
     const [dw, dh] = size(d.dev);
-    const devThere = items.some((o) => o.name === d.dev &&
-      o.x + o.w / 2 === d.ax && o.y + o.h / 2 === d.ay);
-    if (!devThere && !put(d.dev, d.ax - dw / UNIT / 2, d.ay - dh / UNIT / 2,
-      d.mode ? { mode: d.mode } : {})) {
-      q.forEach((x) => { if (x.placed === undefined) x.placed = false; });
-      return 0;
+    /* 多座同类设备: 第 1 座占锚点; 第 2 座起在锚定块内找位置,
+       覆盖(36x36)不得与任何已放设备的覆盖重叠(温度会叠加), 也不压本锚服务区 */
+    const n = Math.max(1, counts[d.dev] || 1);
+    const cluster = items.filter((o) => o.name === d.dev &&
+      o.ax === d.ax && o.ay === d.ay);
+    if (!cluster.length) {
+      const w0 = dw / UNIT, h0 = dh / UNIT;
+      const freeAt0 = (x, y) => onUnlocked(x, y, w0, h0) && !roadHit(x, y, w0, h0) &&
+        !items.some((o) => x < o.x + o.w && o.x < x + w0 && y < o.y + o.h && o.y < y + h0);
+      if (!put(d.dev, Math.round(d.ax - w0 / 2), Math.round(d.ay - h0 / 2),
+        { ax: d.ax, ay: d.ay, ...(d.mode ? { mode: d.mode } : {}) })) {
+        q.forEach((x) => { if (x.placed === undefined) x.placed = false; });
+        return 0;
+      }
+      const covOf = (o) => {
+        const eff = GD.building_effects[o.name];
+        const hf = Math.round(eff.range / UNIT / 2);
+        return { x: o.x + o.w / 2 - hf, y: o.y + o.h / 2 - hf, w: hf * 2, h: hf * 2 };
+      };
+      const inter = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) *
+        Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+      /* 搜索窗口: 锚点周边 240x240(可跨块), 取距锚点最近且覆盖互不干扰的位 */
+      const bnd = { x: d.ax - 120, y: d.ay - 120, w: 240, h: 240 };
+      for (let m = 1; m < n; m++) {
+        let best = null, bc = 1e18;
+        for (let y = Math.max(0, bnd.y); y + h0 <= Math.min(GRID, bnd.y + bnd.h); y += 2)
+          for (let x = Math.max(0, bnd.x); x + w0 <= Math.min(GRID, bnd.x + bnd.w); x += 2) {
+            if (!freeAt0(x, y)) continue;
+            const cov = { x: x + w0 / 2 - 18, y: y + h0 / 2 - 18, w: 36, h: 36 };
+            /* 与已有设备覆盖保持 >=16 缓冲: 任何作物格(最大16x16)
+               都不可能同时压到两个覆盖, 温度才不会叠加 */
+            const pad = { x: cov.x - 16, y: cov.y - 16, w: cov.w + 32, h: cov.h + 32 };
+            let bad = false;
+            for (const o of items)
+              if (["日光灯", "热能炉", "制冷机"].includes(o.name) && inter(covOf(o), pad) > 0) { bad = true; break; }
+            if (bad) continue;
+            const dd = Math.abs(x + w0 / 2 - d.ax) + Math.abs(y + h0 / 2 - d.ay);
+            if (dd < bc) { bc = dd; best = { x, y }; }
+          }
+        if (!best) break;                            // 块内无零重叠位: 剩余设备放弃(计入 dropped 由外层)
+        put(d.dev, best.x, best.y, { ax: d.ax, ay: d.ay, ...(d.mode ? { mode: d.mode } : {}) });
+      }
     }
     /* 影响范围36x36; 田位6x6步距8(自-7起)/树位4x4步距16(自-15起),
        每个位至少1格落在范围内(任意1格即生效); x/y 坐标各自独立成列 */
@@ -1071,11 +1132,12 @@ function autoLayout() {
   const clearAnchorArea = (devs) => {           // 回滚这些锚点服务区内的产物(评估用)
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
+      const marked = devs.some((d) => it.ax === d.ax && it.ay === d.ay);
       const inAny = devs.some((d) =>
         it.x < d.ax + 33 && d.ax - 33 < it.x + it.w &&
         it.y < d.ay + 33 && d.ay - 33 < it.y + it.h);
       const isDev = devs.some((d) => d.dev === it.name);
-      if (inAny && (isDev || it.name === "田地" || it.name === "林地"))
+      if ((marked || (inAny && isDev)) || (inAny && (it.name === "田地" || it.name === "林地")))
         items.splice(i, 1);
     }
   };
@@ -1093,7 +1155,7 @@ function autoLayout() {
       queues[x.key].forEach((it2) => { delete it2.placed; }));
     const keepSat = run();
     const devIn = (x) => items.some((o) => o.name === x.dev &&
-      o.x + o.w / 2 === x.ax && o.y + o.h / 2 === x.ay);
+      o.ax === x.ax && o.ay === x.ay);
     const allIn = devsInChunk.every(devIn) && devsInChunk.every((x) =>
       queues[x.key].every((it2) => !it2.exact || it2.placed === true));
     if (!allIn) {
@@ -1111,21 +1173,29 @@ function autoLayout() {
 
   /* 噼啪发电桩: 供电优先于功能区排布 —— 先于普通填充与功能区装箱,
      在生产带中心选址(自由格点中距带质心最近); 后续一切摆放自动避让其覆盖区,
-     需要原材料的建筑则向覆盖区内聚集 */
+     需要原材料的建筑则向覆盖区内聚集。
+     多座发电桩并网: 覆盖重叠无害(非光温设备), 第 2 座起紧邻已放桩放置 */
   if (counts.噼啪发电桩) {
     const pc = prodChunks.length ? prodChunks : chunksAll;
     const bcx = pc.reduce((s, c) => s + c.px * PLOT_CELLS + 40, 0) / pc.length;
     const bcy = pc.reduce((s, c) => s + c.py * PLOT_CELLS + 40, 0) / pc.length;
-    let best = null, bd = 1e9;
-    for (let y = minY + 4; y + 8 <= maxY - 4; y += 2)
-      for (let x = minX + 4; x + 8 <= maxX - 4; x += 2) {
-        if (!onUnlocked(x, y, 8, 8) || roadHit(x, y, 8, 8)) continue;
-        if (items.some((o) => x < o.x + o.w && o.x < x + 8 && y < o.y + o.h && o.y < y + 8)) continue;
-        const d = Math.abs(x + 4 - bcx) + Math.abs(y + 4 - bcy);
-        if (d < bd) { bd = d; best = { x, y }; }
-      }
-    if (best) put("噼啪发电桩", best.x, best.y, { mode: "发电" });
-    else dropped++;
+    const placeGen = (tx, ty) => {
+      let best = null, bd = 1e9;
+      for (let y = Math.max(0, ty - 60); y + 8 <= Math.min(GRID, ty + 60); y += 2)
+        for (let x = Math.max(0, tx - 60); x + 8 <= Math.min(GRID, tx + 60); x += 2) {
+          if (!onUnlocked(x, y, 8, 8) || roadHit(x, y, 8, 8)) continue;
+          if (items.some((o) => x < o.x + o.w && o.x < x + 8 && y < o.y + o.h && o.y < y + 8)) continue;
+          const d = Math.abs(x + 4 - tx) + Math.abs(y + 4 - ty);
+          if (d < bd) { bd = d; best = { x, y }; }
+        }
+      if (best) { put("噼啪发电桩", best.x, best.y, { mode: "发电" }); return true; }
+      return false;
+    };
+    if (!placeGen(Math.round(bcx), Math.round(bcy))) dropped++;
+    for (let k = 1; k < counts.噼啪发电桩; k++) {
+      const g0 = items.find((o) => o.name === "噼啪发电桩");
+      if (!g0 || !placeGen(g0.x, g0.y)) { dropped++; break; }
+    }
   }
 
   /* 普通填充: 与设备槽位同源格点(chunk+7, 步距=尺寸);
@@ -1201,7 +1271,7 @@ function autoLayout() {
     if (skip.has(n) || !size(n)) continue;
     for (let k = 0; k < (counts[n] || 0); k++) chain.push(n);
   }
-  const zonesSeq = [], zoneIdx = new Map();     // 区序=组内首成员的链序
+  const zonesRaw = [], zoneIdx = new Map();     // 区序=组内首成员的链序
   for (const n of chain) {
     const g = TYPE_GROUPS.findIndex((gr) => gr.includes(n));
     let z;
@@ -1209,10 +1279,20 @@ function autoLayout() {
     else if (!(z = zoneIdx.get(g))) {
       z = { names: [] };
       zoneIdx.set(g, z);
-      zonesSeq.push(z);
+      zonesRaw.push(z);
     }
-    if (g < 0) zonesSeq.push(z);
+    if (g < 0) zonesRaw.push(z);
     z.names.push(n);
+  }
+  /* 组内再按"是否接入电网"拆分: 混合组里只要有一座不接入的建筑,
+     整个功能区都进不了发电桩覆盖区(避让规则), 拆开后加工建筑可聚拢供电 */
+  const isMfgB = (n) => !!(GD.building_powers && GD.building_powers[n] && rawsG.has(n));
+  const zonesSeq = [];
+  for (const z of zonesRaw) {
+    const mfg = z.names.filter(isMfgB);
+    const rest = z.names.filter((n) => !isMfgB(n));
+    if (mfg.length && rest.length) zonesSeq.push({ names: rest }, { names: mfg });
+    else zonesSeq.push(z);
   }
   /* 矩形装箱: 正方形不可行时的退化方案(原货架扫描) */
   const packRect = (names, maxH, maxW) => {
@@ -1272,8 +1352,8 @@ function autoLayout() {
      外接为严格正方形 —— 自下界递增边长 S 取首个可行值,
      依次尝试 链序整组/链序逐座/高度降序逐座(§5.1 两种排序);
      行内水平居中、行栈竖直居中(对称); 均不可行退化为矩形 */
-  const packZone = (names, maxSide, wideCap) => {
-    const G = 2;
+  const packZone = (names, maxSide, wideCap, gutter) => {
+    const G = gutter || 2;                       // 加工区用大行距, 为电线杆留槽
     const runs = [];
     for (const n of names) {
       const r = runs[runs.length - 1];
@@ -1332,10 +1412,13 @@ function autoLayout() {
   /* 功能区块沿生产带连续排布(可跨土地格): 同带横向推进(块间主路4),
      放不下换新带(带间主路4); 步进1避开奇偶锁死; 块高以生产带高为上限 */
   const ROAD = 4;
-  const pL = minX + 4, pR = maxX - 4;
+  /* 生产带横向范围取中行实际块的并集(列交集会被部分解锁的边行砍窄) */
+  const bandCols = prodChunks.length ? prodChunks : chunksAll;
+  const pL = Math.min(...bandCols.map((c) => c.px)) * PLOT_CELLS + 4;
+  const pR = (Math.max(...bandCols.map((c) => c.px)) + 1) * PLOT_CELLS - 4;
   const pT = Math.max(minY + 4, midPy * PLOT_CELLS + 4), pB = maxY - 4;
   const maxSide = Math.min(pB - pT, pR - pL);
-  let bandTop = pT, rowH = 0;
+  let bandTop = pT, rowH = 0, lastMfgEdge = null;
   const fitsAll = (bx, by, pk) => {             // bbox 粗查(路/界/占用)通过后逐座精查
     if (!onUnlocked(bx, by, pk.w, pk.h) || roadHit(bx, by, pk.w, pk.h)) return false;
     /* 与已有建筑保持主路间隔(外扩ROAD) */
@@ -1343,32 +1426,55 @@ function autoLayout() {
       by - ROAD < o.y + o.h && o.y < by + pk.h + ROAD)) return false;
     return pk.rects.every((r) => canPlace(r.n, bx + r.x, by + r.y));
   };
-  /* 先统一装箱, 按块高降序落位(FFDH): 同带高度趋同, 区间空隙收敛到主路宽 */
+  /* 先统一装箱, 按块高降序落位(FFDH): 同带高度趋同, 区间空隙收敛到主路宽;
+     含加工建筑的区优先向发电桩覆盖区聚拢(供电优先), 先试对齐覆盖的起点再常规扫描 */
+  const genList = () => items.filter((o) => o.name === "噼啪发电桩");
+  const zoneHasMfg = (names) => names.some((n) => {
+    const w2 = GD.building_powers && GD.building_powers[n];
+    return w2 && rawsG.has(n);
+  });
   const zonePacks = zonesSeq
-    .map((z, i) => ({ i, pk: packZone(z.names, maxSide, pR - pL) }))
+    .map((z, i) => {
+      const mfg = zoneHasMfg(z.names);
+      return { i, mfg, pk: packZone(z.names, maxSide, pR - pL, mfg ? mfgGutter : 2) };
+    })
     .filter((o) => o.pk.rects.length)
     .sort((a, b) => b.pk.h - a.pk.h || a.i - b.i);
   for (const zo of zonePacks) {
     const pk = zo.pk;
     let at = null;
-    while (bandTop + pk.h <= pB && !at) {
+    const scanFrom = (dxStart) => {
       for (let dy = 0; bandTop + dy + pk.h <= pB && !at; dy += 1)
-        for (let dx = 0; pL + dx + pk.w <= pR && !at; dx += 1)
+        for (let dx = dxStart; pL + dx + pk.w <= pR && !at; dx += 1)
           if (fitsAll(pL + dx, bandTop + dy, pk)) at = [pL + dx, bandTop + dy];
+    };
+
+    while (bandTop + pk.h <= pB && !at) {
+      if (zo.mfg) {
+        for (const g of genList()) {                     // 起点对齐发电桩覆盖区
+          const gx = g.x + 4 - 22;
+          scanFrom(Math.max(0, Math.min(gx - pL, pR - pL - pk.w)));
+          if (at) break;
+          scanFrom(Math.max(0, Math.min(gx + 44 - pk.w - pL, pR - pL - pk.w)));
+          if (at) break;
+        }
+      }
+      if (!at) scanFrom(0);
       if (!at) { bandTop += rowH + ROAD; rowH = 0; }        // 换新带
     }
+
     if (at) {
       pk.rects.forEach((r) => put(r.n, at[0] + r.x, at[1] + r.y));
       rowH = Math.max(rowH, (at[1] - bandTop) + pk.h);
-    } else {                                    // 生产带塞不下: 从当前带位起逐个兜底
+    } else {                                    // 生产带塞不下: 先带内后全域逐座兜底
       pk.rects.forEach((r) => {
         const s = size(r.n), w = s[0] / UNIT, h = s[1] / UNIT;
         let ok = false;
         for (let y2 = Math.max(pT, bandTop); y2 + h <= pB && !ok; y2 += 2)
           for (let x2 = pL; x2 + w <= pR && !ok; x2 += 2)
             ok = !!put(r.n, x2, y2);
-        if (!ok) for (let y2 = pT; y2 + h <= pB && !ok; y2 += 2)
-          for (let x2 = pL; x2 + w <= pR && !ok; x2 += 2) ok = !!put(r.n, x2, y2);
+        if (!ok) for (let y2 = minY + 2; y2 + h <= maxY - 2 && !ok; y2 += 2)
+          for (let x2 = minX + 2; x2 + w <= maxX - 2 && !ok; x2 += 2) ok = !!put(r.n, x2, y2);
         if (!ok) dropped++;
       });
     }
@@ -1466,8 +1572,12 @@ function autoLayout() {
   if (counts.噼啪发电桩 && counts.噼啪电线杆) {
     const rawsG = rawMatBuildings();
     const halfP = Math.round(GD.building_effects["噼啪电线杆"].range / UNIT / 2);
-    const genW2 = counts.噼啪发电桩 *
-      (GD.building_effects["噼啪发电桩"].modes["发电"] || 0);
+    let genW2 = 0;
+    { const byLv = GD.gen_watt_by_level || {};
+      let w = 0;
+      for (const k2 of Object.keys(byLv).map(Number).sort((a, b) => a - b))
+        if (plan.level >= k2) w = byLv[k2];
+      genW2 = counts.噼啪发电桩 * (w || (GD.building_effects["噼啪发电桩"].modes["发电"] || 0)); }
     const consumersG = items.filter((it) =>
       GD.building_powers[it.name] && rawsG.has(it.name));
     for (let k = 0; k < counts.噼啪电线杆; k++) {
@@ -1488,7 +1598,12 @@ function autoLayout() {
       const unc = consumersG.filter((b) => !hitConn(b))
         .sort((a, b) => GD.building_powers[b.name] - GD.building_powers[a.name]);
       if (!unc.length || idle <= 0) break;
-      let best = null, bs = 0;
+      /* 电网到最近未接入建筑的 L1 距离(评估过渡杆是否推进) */
+      const distTo = (rects, b) => rects.reduce((d, z) => Math.min(d,
+        Math.max(0, Math.max(z.x - (b.x + b.w), b.x - (z.x + z.w))) +
+        Math.max(0, Math.max(z.y - (b.y + b.h), b.y - (z.y + z.h)))), 1e9);
+      const dBefore = Math.min(...unc.map((b) => distTo(conn, b)));
+      let best = null, bs = 0, bridge = null, bbest = 0;
       for (let y = minY + 3; y + 6 <= maxY - 3; y += 3)
         for (let x = minX + 3; x + 6 <= maxX - 3; x += 3) {
           if (!onUnlocked(x, y, 6, 6) || roadHit(x, y, 6, 6)) continue;
@@ -1501,11 +1616,17 @@ function autoLayout() {
                 pcov.y < b.y + b.h && b.y < pcov.y + pcov.h) s += GD.building_powers[b.name];
           for (const b of items) if (isProtected(b.name) && hit(pcov, b)) sN++;
           if (sN > 0) continue;                    // 杆覆盖不得罩住不接入电网的设施
-          s = s * 10000;
-          if (s > bs) { bs = s; best = { x, y }; }
+          if (s > 0) {
+            if (s * 10000 > bs) { bs = s * 10000; best = { x, y }; }
+          } else {                                 // 过渡杆: 朝最近目标推进距离最大
+            const dAfter = Math.min(...unc.map((b) => distTo([...conn, pcov], b)));
+            const gain = dBefore - dAfter;
+            if (gain > bbest) { bbest = gain; bridge = { x, y }; }
+          }
         }
-      if (!best || bs <= 0) break;
-      put("噼啪电线杆", best.x, best.y);
+      const pick = best || (bbest > 0 ? bridge : null);      // 直连优先, 无则过渡
+      if (!pick) break;
+      put("噼啪电线杆", pick.x, pick.y);
     }
   }
 
@@ -1516,6 +1637,7 @@ function autoLayout() {
   hoverInfo = `一键布局完成：${items.length} 座建筑（${plan.level} 级）` +
     (dropped ? `，${dropped} 座因空间不足未放置` : "");
   save(); renderPalette(); renderStats(); draw();
+  return dropped;
 }
 
 /* 一键导入生产方案: 按摆放顺序给田地/林地分配作物, 手动指定的保留 */

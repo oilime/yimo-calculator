@@ -1,8 +1,8 @@
 /* 伊莫家园生产计算器 前端逻辑(纯前端: 本地引擎 + localStorage) */
 import { getEngine, getGameData } from "./engine/client.js";
 import { store } from "./engine/store.js";
-import { initPlanner, syncPlanner } from "./planner.js?v=115";
-import { initBlocks } from "./blocks.js?v=115";
+import { initPlanner, syncPlanner } from "./planner.js?v=145";
+import { initBlocks } from "./blocks.js?v=145";
 
 "use strict";
 
@@ -93,14 +93,6 @@ function hoursValue() {
   const v = parseFloat($("#hours-custom").value);
   return isNaN(v) ? 24 : v;
 }
-function switchValue() {
-  return $("#opt-lazy").checked ? parseInt($("#max-switch").value, 10) : 0;
-}
-function recipesValue() {
-  if (!$("#opt-lazy").checked) return null;
-  const v = $("#max-recipes").value;
-  return v === "" ? null : parseInt(v, 10);
-}
 /* ---------------- 最优方案 ---------------- */
 async function runOptimize() {
   const btn = $("#btn-run");
@@ -119,8 +111,7 @@ async function runOptimize() {
       counts: collectCounts(),
       excludeSeasonal: !$("#opt-use-seasonal").checked,
       lazy: $("#opt-lazy").checked,
-      maxSwitches: switchValue(),
-      maxRecipes: recipesValue(),
+      upgradeFirst: $("#opt-upgrade").checked,
       stock: collectStockRows(),
       buildingEff: collectEffRows(),
       pins: pinData,
@@ -150,14 +141,9 @@ function renderOverview(r) {
   $("#ov-int").textContent = fmt(r.total_int);
   $("#ov-int-k").textContent = r.lazy ? "懒人方案总价值" : "整数可行方案";
   $("#ov-ratio").textContent = r.lazy
-    ? (r.segments && r.segments.length > 1
-        ? `分 ${r.segments.length} 个时段（统一切换）`
-        : switchValue() > 0 ? "未触发切换（全程一种配方更优）" : "每个建筑全程不换配方")
+    ? "每座建筑全程一种配方（有几座最多几种）"
     : `达成率 ${(r.ratio * 100).toFixed(2)}%（轮次取整后）`;
-  const lazyDesc = r.lazy
-    ? ` · 懒人模式${switchValue() > 0 ? `(原料类最多换${switchValue()}次)` : ""}` +
-      (recipesValue() ? ` · 原料类≤${recipesValue()}种` : "")
-    : "";
+  const lazyDesc = r.lazy ? " · 懒人模式" : "";
   const effDesc = Object.keys(r.building_eff || {}).length
     ? ` · 精细效率${Object.keys(r.building_eff).length}项` : "";
   const pinDesc = r.pins && r.pins.length
@@ -357,7 +343,7 @@ function renderArrangement(r) {
     const flex = r.plan.filter((p) => p.flexible);
     if (flex.length) {
       html += `<div class="mt arr-b"><div class="arr-head">制造类建筑` +
-        `<span class="cap">材料到了就加工 · 全程灵活换配方</span></div>` +
+        `<span class="cap">${r.lazy ? "每座全程一个配方 · 有几座最多几种" : "材料到了就加工 · 全程灵活换配方"}</span></div>` +
         `<div class="arr-items">` +
         flex.map((p) =>
           `<span class="it"><span class="dot" style="background:${colorOf(p.label)}"></span>` +
@@ -372,9 +358,7 @@ function renderArrangement(r) {
 
   // 全程单段: 每建筑比例条 + 整数口径明细
     hint.textContent = r.lazy
-      ? (r.max_recipes
-        ? `原料建筑最多 ${r.max_recipes === 1 ? "一" : r.max_recipes} 种产物，自定义生产不占额；制造建筑不限。`
-        : "原料建筑每块地全程一种产物；制造建筑不限。")
+      ? "每座建筑全程只用一个配方：田地/林地按地块、制造建筑按席位分配，有几座该建筑最多同时用几种配方。"
       : "如 9块×18轮＋1块×12轮：9 块地各种 18 轮，另 1 块种 12 轮。";
   const capBy = {};
   r.utilization.forEach((u) => (capBy[u.building] = u.cap));
@@ -415,7 +399,7 @@ function renderArrangement(r) {
         txt = `${growPartsStr(g, p.time_per_batch)}（每轮${timeStr(p.time_per_batch)}，共${fmt(p.batches_int)}轮）`;
       } else if (p.chain) {
         txt = `${fmt(p.batches)}轮（单轮${timeStr(p.time_per_batch)}，加工链环节）`;
-      } else if (p.flexible) {
+      } else if (p.flexible && !r.lazy) {
         txt = `${fmt(p.batches)}轮（单轮${timeStr(p.time_per_batch)}，` +
           `累计${timeStr(p.batches * p.time_per_batch)}，按材料灵活换配方）`;
       } else {
@@ -552,7 +536,7 @@ function renderPlanTable(r) {
       let occupy;
       if (p.chain) {
         occupy = `累计${timeStr(p.batches * p.time_per_batch)} · 加工链`;
-      } else if (p.flexible) {
+      } else if (p.flexible && !r.lazy) {
         occupy = `累计${timeStr(p.batches * p.time_per_batch)} · 灵活换配方`;
       } else if (p.ttype === "生长" && !r.segments) {
         occupy = growPartsStr(
@@ -624,7 +608,7 @@ function stockRow(item = "", qty = "") {
   iItem.addEventListener("input", updateFilled);
   iQty.addEventListener("input", () => { updateFilled(); autoGrow(); });
   updateFilled();
-  div.querySelector("button").onclick = () => div.remove();
+  div.querySelector("button").onclick = () => { div.remove(); persistStock(); };
   return div;
 }
 
@@ -712,7 +696,7 @@ function pinRow(building = "", recipeId = "", n = "") {
   fillRecipes();
   bSel.addEventListener("change", () => { curRid = ""; fillRecipes(); });
   rSel.addEventListener("change", () => { updateFilled(); autoGrow(); });
-  div.querySelector("button").onclick = () => div.remove();
+  div.querySelector("button").onclick = () => { div.remove(); persistPins(); };
   return div;
 }
 
@@ -940,9 +924,7 @@ function restoreSettings(s) {
   if (s.coeff != null) $("#coeff").value = s.coeff;
   if (s.useSeasonal) $("#opt-use-seasonal").checked = true;
   if (s.lazy) $("#opt-lazy").checked = true;
-  if (s.maxRecipes != null) $("#max-recipes").value = String(s.maxRecipes);
-  if (s.maxSwitch != null) $("#max-switch").value = String(s.maxSwitch);
-  syncLazyControls();
+  if (s.upgradeFirst) $("#opt-upgrade").checked = true;
 }
 function saveSettings() {
   store.save({ settings: {
@@ -952,8 +934,7 @@ function saveSettings() {
     coeff: $("#coeff").value,
     useSeasonal: $("#opt-use-seasonal").checked,
     lazy: $("#opt-lazy").checked,
-    maxRecipes: $("#max-recipes").value,
-    maxSwitch: $("#max-switch").value,
+    upgradeFirst: $("#opt-upgrade").checked,
     mig10: true,
   } });
 }
@@ -965,17 +946,6 @@ $("#btn-run").addEventListener("click", async () => {
 
 $("#hours").addEventListener("change", () =>
   $("#hours-custom").classList.toggle("hidden", $("#hours").value !== "custom"));
-
-function syncLazyControls() {
-  const on = $("#opt-lazy").checked;
-  $("#sw-wrap").classList.toggle("hidden", !on);
-  $("#sw2-wrap").classList.toggle("hidden", !on);
-  const uniform = $("#max-recipes").value === "1";
-  $("#max-switch").disabled = uniform;        // 整齐划一时切换无意义
-  if (uniform) $("#max-switch").value = "0";
-}
-$("#opt-lazy").addEventListener("change", syncLazyControls);
-$("#max-recipes").addEventListener("change", syncLazyControls);
 
 $("#f-building").addEventListener("change", renderProducts);
 $("#f-search").addEventListener("input", renderProducts);
@@ -1049,7 +1019,7 @@ $("#eff-rows").addEventListener("input", autoSave(persistEff));
 $("#pin-rows").addEventListener("change", autoSave(persistPins));
 $("#pin-rows").addEventListener("input", autoSave(persistPins));
 ["#level", "#hours", "#hours-custom", "#coeff", "#opt-use-seasonal",
- "#opt-lazy", "#max-recipes", "#max-switch"].forEach((sel) => {
+ "#opt-lazy", "#opt-upgrade"].forEach((sel) => {
   const el = $(sel);
   el.addEventListener("change", saveSettings);
   el.addEventListener("input", autoSave(saveSettings));
